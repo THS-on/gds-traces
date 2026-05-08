@@ -1,0 +1,2 @@
+[hosts.polly]
+nvme = "/dev/disk/by-id/nvme-KIOXIA_KCMYXRUG3T84_4FB0A0CT0LM3_1"
