@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
     pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -11,6 +12,7 @@
       self,
       nixpkgs,
       pre-commit-hooks,
+      crane,
     }:
     let
       system = "x86_64-linux";
@@ -19,6 +21,8 @@
 
     in
     {
+      packages.${system}.nvme-trace = pkgs.callPackage ./nix/nvme-trace.nix { inherit crane; };
+
       formatter.${system} = pkgs.nixfmt-rfc-style;
 
       checks.${system}.pre-commit-check = pre-commit-hooks.lib.${system}.run {
