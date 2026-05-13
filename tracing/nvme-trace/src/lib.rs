@@ -386,11 +386,24 @@ pub fn parse_record_bytes(bytes: Vec<u8>, offset: u64) -> Result<RawRecord> {
 }
 
 pub fn record_order(a: &Header, b: &Header) -> Ordering {
-    a.timestamp_ns
-        .cmp(&b.timestamp_ns)
-        .then_with(|| a.seq.cmp(&b.seq))
-        .then_with(|| a.qid.cmp(&b.qid))
-        .then_with(|| a.cid.cmp(&b.cid))
+    // seq is the authoritative order within a device: the kernel captures the
+    // timestamp before claiming the atomic seq counter, so cross-CPU races can
+    // produce a slightly-earlier timestamp paired with a higher seq number.
+    // Use seq as the primary key for same-controller records; fall back to
+    // timestamp only when comparing across different controllers.
+    if a.ctrl_id == b.ctrl_id {
+        a.seq
+            .cmp(&b.seq)
+            .then_with(|| a.qid.cmp(&b.qid))
+            .then_with(|| a.cid.cmp(&b.cid))
+    } else {
+        a.timestamp_ns
+            .cmp(&b.timestamp_ns)
+            .then_with(|| a.ctrl_id.cmp(&b.ctrl_id))
+            .then_with(|| a.seq.cmp(&b.seq))
+            .then_with(|| a.qid.cmp(&b.qid))
+            .then_with(|| a.cid.cmp(&b.cid))
+    }
 }
 
 pub fn splice_streams<R: Read, W: Write, F: FnMut(String)>(
