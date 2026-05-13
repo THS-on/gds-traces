@@ -38,6 +38,45 @@ struct QueueKey {
     qid: u8,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum DataDirection {
+    Read,
+    Write,
+    Other,
+}
+
+impl DataDirection {
+    fn from_opcode(opcode: u8) -> Self {
+        match opcode {
+            0x01 => Self::Write,
+            0x02 => Self::Read,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct InFlightCommand {
+    data_len: u32,
+    direction: DataDirection,
+}
+
+#[derive(Debug, Default)]
+struct ThroughputBucket {
+    read_bytes: u128,
+    write_bytes: u128,
+}
+
+impl ThroughputBucket {
+    fn add(&mut self, command: InFlightCommand) {
+        match command.direction {
+            DataDirection::Read => self.read_bytes += u128::from(command.data_len),
+            DataDirection::Write => self.write_bytes += u128::from(command.data_len),
+            DataDirection::Other => {}
+        }
+    }
+}
+
 pub(crate) fn throughput(inputs: &[PathBuf], scale: &str) -> Result<()> {
     let scale_ns = parse_scale_ns(scale)?;
     let mut output = io::BufWriter::new(io::stdout().lock());
@@ -152,38 +191,67 @@ where
     F: FnMut(String),
 {
     let mut first_ts = None;
-    let mut in_flight = HashMap::<CommandKey, u32>::new();
-    let mut bytes_by_bucket = BTreeMap::<u64, u128>::new();
+    let mut last_offset = None;
+    let mut in_flight = HashMap::<CommandKey, InFlightCommand>::new();
+    let mut bytes_by_bucket = BTreeMap::<u64, ThroughputBucket>::new();
 
     for record in records {
         let header = record.header();
         let base_ts = *first_ts.get_or_insert(header.timestamp_ns);
+        let offset = header.timestamp_ns.saturating_sub(base_ts);
+        last_offset = Some(last_offset.map_or(offset, |last: u64| last.max(offset)));
         match record {
             TraceRecord::Submit(submit) => {
                 let key = CommandKey::from_header(submit.header);
-                if in_flight.insert(key, submit.data_len).is_some() {
+                let command = InFlightCommand {
+                    data_len: submit.data_len,
+                    direction: DataDirection::from_opcode(submit.sqe[0]),
+                };
+                if in_flight.insert(key, command).is_some() {
                     warn(duplicate_submit_warning(key));
                 }
             }
             TraceRecord::Complete(complete) => {
                 let key = CommandKey::from_header(complete.header);
-                let Some(data_len) = in_flight.remove(&key) else {
+                let Some(command) = in_flight.remove(&key) else {
                     warn(unmatched_completion_warning(key));
                     continue;
                 };
-                let offset = complete.header.timestamp_ns.saturating_sub(base_ts);
                 let bucket = (offset / scale_ns) * scale_ns;
-                *bytes_by_bucket.entry(bucket).or_default() += u128::from(data_len);
+                bytes_by_bucket.entry(bucket).or_default().add(command);
             }
         }
     }
 
-    writeln!(output, "time_ns\tbytes_per_second")?;
+    let last_offset = last_offset.unwrap_or_default();
+    writeln!(
+        output,
+        "time_ns\tread_bytes_per_second\twrite_bytes_per_second\tread_mb_per_second\twrite_mb_per_second"
+    )?;
     for (bucket, bytes) in bytes_by_bucket {
-        let rate = bytes as f64 * 1_000_000_000_f64 / scale_ns as f64;
-        writeln!(output, "{bucket}\t{rate:.6}")?;
+        let duration_ns = throughput_bucket_duration_ns(bucket, scale_ns, last_offset);
+        let read_rate = throughput_rate(bytes.read_bytes, duration_ns);
+        let write_rate = throughput_rate(bytes.write_bytes, duration_ns);
+        let read_mb_rate = bytes_per_second_to_mb(read_rate);
+        let write_mb_rate = bytes_per_second_to_mb(write_rate);
+        writeln!(
+            output,
+            "{bucket}\t{read_rate:.6}\t{write_rate:.6}\t{read_mb_rate:.2}\t{write_mb_rate:.2}"
+        )?;
     }
     Ok(())
+}
+
+fn throughput_bucket_duration_ns(bucket: u64, scale_ns: u64, last_offset: u64) -> u64 {
+    last_offset.saturating_sub(bucket).clamp(1, scale_ns)
+}
+
+fn throughput_rate(bytes: u128, duration_ns: u64) -> f64 {
+    bytes as f64 * 1_000_000_000_f64 / duration_ns as f64
+}
+
+fn bytes_per_second_to_mb(bytes_per_second: f64) -> f64 {
+    bytes_per_second / 1_000_000_f64
 }
 
 fn analyze_queue_depth_records<W, F>(
@@ -441,8 +509,8 @@ mod tests {
     #[test]
     fn throughput_buckets_completed_bytes_by_completion_time() {
         let records = vec![
-            submit(1_000, 1, 0, 1, 10, 100),
-            submit(1_050, 2, 0, 1, 11, 200),
+            read_submit(1_000, 1, 0, 1, 10, 100),
+            write_submit(1_050, 2, 0, 1, 11, 200),
             complete(1_100, 3, 0, 1, 10),
             complete(1_250, 4, 0, 1, 11),
         ];
@@ -450,7 +518,31 @@ mod tests {
 
         assert_eq!(
             output,
-            "time_ns\tbytes_per_second\n100\t1000000000.000000\n200\t2000000000.000000\n"
+            concat!(
+                "time_ns\tread_bytes_per_second\twrite_bytes_per_second\tread_mb_per_second\twrite_mb_per_second\n",
+                "100\t1000000000.000000\t0.000000\t1000.00\t0.00\n",
+                "200\t0.000000\t4000000000.000000\t0.00\t4000.00\n"
+            )
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn throughput_limits_scale_to_last_event() {
+        let records = vec![
+            read_submit(1_000, 1, 0, 1, 10, 100),
+            write_submit(1_010, 2, 0, 1, 11, 300),
+            complete(1_050, 3, 0, 1, 10),
+            complete(1_100, 4, 0, 1, 11),
+        ];
+        let (output, warnings) = run_throughput(records, 1_000);
+
+        assert_eq!(
+            output,
+            concat!(
+                "time_ns\tread_bytes_per_second\twrite_bytes_per_second\tread_mb_per_second\twrite_mb_per_second\n",
+                "0\t1000000000.000000\t3000000000.000000\t1000.00\t3000.00\n"
+            )
         );
         assert!(warnings.is_empty());
     }
@@ -509,8 +601,8 @@ mod tests {
     fn warns_for_unmatched_completions_and_duplicate_submits() {
         let records = vec![
             complete(1_000, 1, 0, 1, 10),
-            submit(1_010, 2, 0, 1, 10, 100),
-            submit(1_020, 3, 0, 1, 10, 200),
+            read_submit(1_010, 2, 0, 1, 10, 100),
+            read_submit(1_020, 3, 0, 1, 10, 200),
             complete(1_030, 4, 0, 1, 10),
         ];
         let (_, warnings) = run_throughput(records, 100);
@@ -558,9 +650,46 @@ mod tests {
         cid: u16,
         data_len: u32,
     ) -> TraceRecord {
+        submit_with_opcode(timestamp_ns, seq, ctrl_id, qid, cid, data_len, 0x02)
+    }
+
+    fn read_submit(
+        timestamp_ns: u64,
+        seq: u32,
+        ctrl_id: u8,
+        qid: u8,
+        cid: u16,
+        data_len: u32,
+    ) -> TraceRecord {
+        submit_with_opcode(timestamp_ns, seq, ctrl_id, qid, cid, data_len, 0x02)
+    }
+
+    fn write_submit(
+        timestamp_ns: u64,
+        seq: u32,
+        ctrl_id: u8,
+        qid: u8,
+        cid: u16,
+        data_len: u32,
+    ) -> TraceRecord {
+        submit_with_opcode(timestamp_ns, seq, ctrl_id, qid, cid, data_len, 0x01)
+    }
+
+    fn submit_with_opcode(
+        timestamp_ns: u64,
+        seq: u32,
+        ctrl_id: u8,
+        qid: u8,
+        cid: u16,
+        data_len: u32,
+        opcode: u8,
+    ) -> TraceRecord {
+        let mut sqe = [0; SQE_LEN];
+        sqe[0] = opcode;
+
         TraceRecord::Submit(SubmitRecord {
             header: header(NVME_TRACE_SUBMIT, timestamp_ns, seq, ctrl_id, qid, cid),
-            sqe: [0; SQE_LEN],
+            sqe,
             data_len,
             meta_len: 0,
             use_sgl: false,
