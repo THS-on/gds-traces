@@ -1,0 +1,165 @@
+/*
+ * relay_repro_client.c — read relay_repro/buf0 and detect duplicate records
+ *
+ * A duplicate manifests as a seq value less than or equal to the previous
+ * one: after the ring wraps, the stale first-fill bytes of the recycled
+ * subbuf are re-served, producing seq values far below the current cursor.
+ *
+ * Usage:
+ *   ./relay_repro_client [/sys/kernel/debug/relay_repro/buf0]
+ *
+ * Pin the process to CPU 1 (where the kernel writer is on CPU 0) to
+ * maximise contention with relay_switch_subbuf().
+ */
+#define _GNU_SOURCE
+#include <endian.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <sched.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define REPRO_MAGIC  UINT32_C(0xDEADBEEF)
+#define RECORD_SIZE  24
+#define READ_BUF     (256 * 1024)
+
+struct repro_rec {
+	uint32_t magic;
+	uint32_t seq;
+	uint64_t timestamp_ns;
+	uint64_t fill;
+} __attribute__((packed));
+
+_Static_assert(sizeof(struct repro_rec) == RECORD_SIZE, "size mismatch");
+
+static volatile int stop_flag;
+static void on_sigint(int s) { (void)s; stop_flag = 1; }
+
+int main(int argc, char *argv[])
+{
+	const char *path = argc > 1 ? argv[1]
+				    : "/sys/kernel/debug/relay_repro/buf0";
+	int fd;
+	uint8_t *buf;
+	/* Carry incomplete record bytes across read() calls. */
+	uint8_t carry[RECORD_SIZE];
+	int     carry_len = 0;
+	uint64_t file_off = 0;
+	uint32_t last_seq = UINT32_MAX; /* sentinel: no record seen yet */
+	uint64_t total = 0, dups = 0;
+
+	signal(SIGINT,  on_sigint);
+	signal(SIGTERM, on_sigint);
+
+	/* Pin to CPU 1 so the writer on CPU 0 and reader share the same
+	 * cache domain — store propagation is fast and the race window is hit
+	 * regularly.                                                           */
+	cpu_set_t cpuset;
+	CPU_ZERO(&cpuset);
+	CPU_SET(1, &cpuset);
+	if (sched_setaffinity(0, sizeof(cpuset), &cpuset) < 0)
+		perror("sched_setaffinity (continuing anyway)");
+
+	fd = open(path, O_RDONLY | O_NONBLOCK);
+	if (fd < 0) { perror("open"); return 1; }
+
+	buf = malloc(READ_BUF);
+	if (!buf) { perror("malloc"); return 1; }
+
+	printf("Reading %s  (Ctrl-C to stop)\n", path);
+	fflush(stdout);
+
+	while (!stop_flag) {
+		ssize_t n = read(fd, buf, READ_BUF);
+
+		if (n == 0 || (n < 0 && errno == EAGAIN)) {
+			usleep(100);   /* relay has no data right now */
+			continue;
+		}
+		if (n < 0) { perror("read"); break; }
+
+		uint8_t *p   = buf;
+		uint8_t *end = buf + n;
+
+		/* ---- prepend any bytes left from the previous read ---- */
+		if (carry_len > 0) {
+			int need = RECORD_SIZE - carry_len;
+			if (end - p < need) {
+				/* Still not enough for a full record. */
+				memcpy(carry + carry_len, p, (size_t)(end - p));
+				carry_len += (int)(end - p);
+				file_off  += (uint64_t)n;
+				continue;
+			}
+			memcpy(carry + carry_len, p, (size_t)need);
+			p         += need;
+			carry_len  = 0;
+
+			struct repro_rec *r = (struct repro_rec *)carry;
+			uint32_t magic = le32toh(r->magic);
+			uint32_t seq   = le32toh(r->seq);
+
+			if (magic == REPRO_MAGIC) {
+				if (last_seq != UINT32_MAX && seq <= last_seq) {
+					printf("DUP  off=%-14" PRIu64
+					       "  seq=%-10" PRIu32
+					       "  prev=%" PRIu32 "\n",
+					       file_off - (uint64_t)need,
+					       seq, last_seq);
+					dups++;
+				}
+				last_seq = seq;
+				total++;
+			}
+		}
+
+		/* ---- process whole records in the new data ------------ */
+		while (p + RECORD_SIZE <= end) {
+			struct repro_rec *r = (struct repro_rec *)p;
+			uint32_t magic = le32toh(r->magic);
+			uint32_t seq   = le32toh(r->seq);
+			uint64_t off   = file_off + (uint64_t)(p - buf);
+
+			if (magic != REPRO_MAGIC) {
+				fprintf(stderr, "bad magic 0x%08" PRIx32
+					" at offset %" PRIu64 "\n",
+					magic, off);
+				p++;
+				continue;
+			}
+
+			if (last_seq != UINT32_MAX && seq <= last_seq) {
+				printf("DUP  off=%-14" PRIu64
+				       "  seq=%-10" PRIu32
+				       "  prev=%" PRIu32 "\n",
+				       off, seq, last_seq);
+				dups++;
+			}
+			last_seq = seq;
+			total++;
+			p += RECORD_SIZE;
+		}
+
+		/* ---- save any trailing partial record ----------------- */
+		carry_len = (int)(end - p);
+		if (carry_len > 0)
+			memcpy(carry, p, (size_t)carry_len);
+
+		file_off += (uint64_t)n;
+
+		if (total > 0 && total % 1000000 == 0)
+			printf("  %" PRIu64 " records  %" PRIu64 " dups\n",
+			       total, dups);
+	}
+
+	printf("\nTotal: %" PRIu64 " records  %" PRIu64 " duplicates\n",
+	       total, dups);
+	free(buf);
+	close(fd);
+	return dups > 0 ? 1 : 0;
+}
