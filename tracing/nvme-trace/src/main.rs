@@ -1,3 +1,4 @@
+mod analyze;
 mod capture;
 mod print;
 mod splice;
@@ -39,6 +40,30 @@ enum Command {
         #[arg(required = true)]
         inputs: Vec<PathBuf>,
     },
+    Analyze {
+        #[command(subcommand)]
+        command: AnalyzeCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AnalyzeCommand {
+    Throughput {
+        #[arg(long)]
+        scale: String,
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+    },
+    QueueDepth {
+        #[arg(long)]
+        scale: String,
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+    },
+    QueueDepthPercent {
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -51,6 +76,11 @@ fn main() -> Result<()> {
         } => capture::capture(&controller, trace_dir, &out, drain_ms),
         Command::Splice { out, inputs } => splice::splice(&inputs, &out),
         Command::Print { block_size, inputs } => print::print_records(&inputs, block_size),
+        Command::Analyze { command } => match command {
+            AnalyzeCommand::Throughput { scale, inputs } => analyze::throughput(&inputs, &scale),
+            AnalyzeCommand::QueueDepth { scale, inputs } => analyze::queue_depth(&inputs, &scale),
+            AnalyzeCommand::QueueDepthPercent { inputs } => analyze::queue_depth_percent(&inputs),
+        },
     }
 }
 
