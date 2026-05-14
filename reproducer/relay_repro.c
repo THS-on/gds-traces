@@ -100,19 +100,14 @@ static int writer_fn(void *unused)
 	u32 seq = 0;
 
 	while (!kthread_should_stop()) {
-		struct repro_rec *r;
-		unsigned long flags;
+		struct repro_rec r = {
+			.magic        = cpu_to_le32(REPRO_MAGIC),
+			.seq          = cpu_to_le32(seq++),
+			.timestamp_ns = cpu_to_le64(ktime_get_ns()),
+			.fill         = 0,
+		};
 
-		local_irq_save(flags);
-		r = relay_reserve(repro_chan, sizeof(*r));
-		if (r) {
-			r->magic        = cpu_to_le32(REPRO_MAGIC);
-			r->seq          = cpu_to_le32(seq++);
-			r->timestamp_ns = cpu_to_le64(ktime_get_ns());
-			r->fill         = 0;
-		}
-		local_irq_restore(flags);
-
+		relay_write(repro_chan, &r, sizeof(r));
 		cpu_relax();
 	}
 	return 0;
