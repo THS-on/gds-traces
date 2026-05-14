@@ -136,6 +136,7 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
     let mut last_toggle: Option<u32> = None;
     let mut total: u64 = 0;
     let mut dups: u64 = 0;
+    let mut corruptions: u64 = 0;
     let mut last_report: u64 = 0;
 
     println!(
@@ -195,6 +196,7 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
                 n, RECORD_SIZE
             );
             hexdump(&buf[..n]);
+            corruptions += 1;
         }
 
         let mut offset = 0usize;
@@ -208,6 +210,7 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
                         offset
                     );
                     hexdump(&buf[..n]);
+                    corruptions += 1;
                     offset += 1;
                     continue;
                 }
@@ -233,7 +236,7 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
         }
 
         if total - last_report >= 1_000_000 {
-            println!("  {} records  {} dups", total, dups);
+            println!("  {} records  {} dups  {} corruptions", total, dups, corruptions);
             last_report = total;
         }
     }
@@ -246,7 +249,7 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
             .map_err(|_| anyhow::anyhow!("log writer thread panicked"))??;
     }
 
-    println!("\nTotal: {} records  {} duplicates", total, dups);
+    println!("\nTotal: {} records  {} duplicates  {} corruptions", total, dups, corruptions);
     Ok(dups)
 }
 
