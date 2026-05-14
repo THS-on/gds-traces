@@ -108,7 +108,6 @@ static int writer_fn(void *unused)
 		};
 
 		relay_write(repro_chan, &r, sizeof(r));
-		relay_flush(repro_chan);
 		cpu_relax();
 	}
 	return 0;

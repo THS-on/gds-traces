@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdint.h>
@@ -75,12 +76,19 @@ int main(int argc, char *argv[])
 	fflush(stdout);
 
 	while (!stop_flag) {
+		struct pollfd pfd = { .fd = fd, .events = POLLIN };
+		int ret = poll(&pfd, 1, 100);
+		if (ret < 0) {
+			if (errno == EINTR) continue;
+			perror("poll"); break;
+		}
+		if (ret == 0 || !(pfd.revents & POLLIN))
+			continue;
+
 		ssize_t n = read(fd, buf, READ_BUF);
 
-		if (n == 0 || (n < 0 && errno == EAGAIN)) {
-			usleep(100);   /* relay has no data right now */
+		if (n == 0 || (n < 0 && errno == EAGAIN))
 			continue;
-		}
 		if (n < 0) { perror("read"); break; }
 
 		uint8_t *p   = buf;
