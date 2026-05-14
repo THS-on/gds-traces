@@ -1,0 +1,11 @@
+[package]
+name = "relay-repro-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+binrw = "0.15"
+clap = { version = "4", features = ["derive"] }
+nix = { version = "0.29", features = ["fs", "poll", "sched"] }
+signal-hook = "0.3"

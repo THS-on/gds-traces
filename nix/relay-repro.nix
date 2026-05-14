@@ -2,6 +2,8 @@
   stdenv,
   symlinkJoin,
   kernel,
+  crane,
+  pkgs,
 }:
 let
   module = stdenv.mkDerivation {
@@ -48,12 +50,27 @@ let
 
     meta.description = "Client for relay_switch_subbuf smp_mb ordering bug reproducer";
   };
+
+  craneLib = crane.mkLib pkgs;
+  rustSrc = craneLib.cleanCargoSource ../reproducer/relay-repro-client;
+  rustCommon = {
+    src = rustSrc;
+    strictDeps = true;
+  };
+  rustArtifacts = craneLib.buildDepsOnly rustCommon;
+  rustClient = craneLib.buildPackage (
+    rustCommon
+    // {
+      cargoArtifacts = rustArtifacts;
+    }
+  );
 in
 symlinkJoin {
   name = "relay-repro";
   paths = [
     module
     client
+    rustClient
   ];
   meta.description = "Reproducer for relay_switch_subbuf smp_mb ordering bug";
 }

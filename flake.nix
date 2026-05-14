@@ -27,7 +27,7 @@
     {
       packages.${system} = {
         nvme-trace = pkgs.callPackage ./nix/nvme-trace.nix { inherit crane; };
-        relay-repro = pkgs.callPackage ./nix/relay-repro.nix { inherit kernel; };
+        relay-repro = pkgs.callPackage ./nix/relay-repro.nix { inherit crane kernel pkgs; };
       };
 
       formatter.${system} = pkgs.nixfmt-rfc-style;
