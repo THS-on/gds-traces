@@ -160,8 +160,14 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
         let n = match input.read(&mut buf) {
             Ok(0) => continue,
             Ok(n) => n,
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                eprintln!("warning: read returned WouldBlock unexpectedly");
+                continue;
+            }
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {
+                eprintln!("warning: read interrupted");
+                continue;
+            }
             Err(err) => {
                 return Err(err)
                     .with_context(|| format!("reading {}", cli.path.display()));
