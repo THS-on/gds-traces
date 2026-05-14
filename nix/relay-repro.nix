@@ -7,13 +7,9 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = kernel.moduleBuildDependencies;
 
-  makeFlags = [
-    "KDIR=${kernel.dev}/lib/modules/${kernel.modDirVersion}/build"
-  ];
-
   buildPhase = ''
     runHook preBuild
-    make $makeFlags M=$(pwd) modules
+    make -C "${kernel.dev}/lib/modules/${kernel.modDirVersion}/build" M=$(pwd) modules
     runHook postBuild
   '';
 
