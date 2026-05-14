@@ -41,9 +41,9 @@
  */
 struct repro_rec {
 	__le32 magic;
-	__le32 seq;
+	__le32 fill;          /* padding before seq for alignment */
+	__le64 seq;
 	__le64 timestamp_ns;
-	__le64 fill;          /* padding to reach 24 bytes */
 };
 
 static_assert(sizeof(struct repro_rec) == 24,
@@ -97,20 +97,20 @@ static const struct rchan_callbacks repro_cb = {
 
 static int writer_fn(void *unused)
 {
-	u32 seq    = 0;
-	u64 toggle = 0; /* flips on every seq wraparound */
+	u64 seq    = 0;
+	u32 toggle = 0; /* flips on every seq wraparound */
 
 	while (!kthread_should_stop()) {
 		struct repro_rec r = {
 			.magic        = cpu_to_le32(REPRO_MAGIC),
-			.seq          = cpu_to_le32(seq),
+			.seq          = cpu_to_le64(seq),
 			.timestamp_ns = cpu_to_le64(ktime_get_ns()),
-			.fill         = cpu_to_le64(toggle),
+			.fill         = cpu_to_le32(toggle),
 		};
 
 		relay_write(repro_chan, &r, sizeof(r));
 
-		if (seq == U32_MAX)
+		if (seq == U64_MAX)
 			toggle ^= 1;
 		seq++;
 		cpu_relax();

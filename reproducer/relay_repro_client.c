@@ -34,9 +34,9 @@
 
 struct repro_rec {
 	uint32_t magic;
-	uint32_t seq;
+	uint32_t fill;
+	uint64_t seq;
 	uint64_t timestamp_ns;
-	uint64_t fill;
 } __attribute__((packed));
 
 _Static_assert(sizeof(struct repro_rec) == RECORD_SIZE, "size mismatch");
@@ -84,8 +84,8 @@ int main(int argc, char *argv[])
 	int fd;
 	uint8_t *buf;
 	uint64_t file_off = 0;
-	uint32_t last_seq    = UINT32_MAX; /* sentinel: no record seen yet */
-	uint64_t last_toggle = UINT64_MAX; /* matches last_seq sentinel   */
+	uint64_t last_seq    = UINT64_MAX; /* sentinel: no record seen yet */
+	uint32_t last_toggle = UINT32_MAX; /* matches last_seq sentinel   */
 	uint64_t total = 0, dups = 0, last_report = 0;
 
 	signal(SIGINT,  on_sigint);
@@ -136,8 +136,8 @@ int main(int argc, char *argv[])
 		while (p + RECORD_SIZE <= end) {
 			struct repro_rec *r = (struct repro_rec *)p;
 			uint32_t magic  = le32toh(r->magic);
-			uint32_t seq    = le32toh(r->seq);
-			uint64_t toggle = le64toh(r->fill);
+			uint64_t seq    = le64toh(r->seq);
+			uint32_t toggle = le32toh(r->fill);
 			uint64_t off    = file_off + (uint64_t)(p - buf);
 
 			if (magic != REPRO_MAGIC) {
@@ -148,11 +148,11 @@ int main(int argc, char *argv[])
 				continue;
 			}
 
-			if (last_seq != UINT32_MAX && seq <= last_seq &&
+			if (last_seq != UINT64_MAX && seq <= last_seq &&
 			    toggle == last_toggle) {
 				printf("DUP  off=%-14" PRIu64
-				       "  seq=%-10" PRIu32
-				       "  prev=%" PRIu32 "\n",
+				       "  seq=%-10" PRIu64
+				       "  prev=%" PRIu64 "\n",
 				       off, seq, last_seq);
 				dups++;
 			}

@@ -19,16 +19,16 @@ use nix::unistd::Pid;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
-// Wire format: magic(4) + seq(4) + timestamp_ns(8) + fill(8) = 24 bytes
+// Wire format: magic(4) + fill(4) + seq(8) + timestamp_ns(8) = 24 bytes
 const RECORD_SIZE: usize = 24;
 const READ_BUF: usize = 256 * 1024;
 
 #[derive(BinRead, Debug)]
 #[br(little, magic = 0xDEAD_BEEFu32)]
 struct ReproRec {
-    seq: u32,
+    fill: u32,
+    seq: u64,
     _timestamp_ns: u64,
-    fill: u64,
 }
 
 #[derive(BinWrite)]
@@ -112,6 +112,8 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
         .with_context(|| format!("opening {}", cli.path.display()))?;
 
     // Optional async logger: sender is None when --log is not given.
+    // Spawn the logger thread BEFORE pinning this thread's CPU affinity so
+    // the logger does not inherit the pin and can run on any CPU.
     let (log_tx, log_handle): (Option<SyncSender<(u64, Vec<u8>)>>, _) =
         if let Some(ref log_path) = cli.log {
             let (tx, rx) = mpsc::sync_channel::<(u64, Vec<u8>)>(64);
@@ -122,9 +124,16 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
             (None, None)
         };
 
+    // Pin this (reading) thread to the requested CPU.
+    let mut cpuset = CpuSet::new();
+    cpuset.set(cli.cpu).context("building CPU set")?;
+    if let Err(err) = sched_setaffinity(Pid::from_raw(0), &cpuset) {
+        eprintln!("sched_setaffinity (continuing anyway): {}", err);
+    }
+
     let mut buf = vec![0u8; READ_BUF];
-    let mut last_seq: Option<u32> = None;
-    let mut last_toggle: Option<u64> = None;
+    let mut last_seq: Option<u64> = None;
+    let mut last_toggle: Option<u32> = None;
     let mut total: u64 = 0;
     let mut dups: u64 = 0;
     let mut last_report: u64 = 0;
@@ -243,12 +252,6 @@ fn run(cli: &Cli, stop: Arc<AtomicBool>) -> Result<u64> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    let mut cpuset = CpuSet::new();
-    cpuset.set(cli.cpu).context("building CPU set")?;
-    if let Err(err) = sched_setaffinity(Pid::from_raw(0), &cpuset) {
-        eprintln!("sched_setaffinity (continuing anyway): {}", err);
-    }
 
     let stop = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&stop)).context("installing SIGINT handler")?;
