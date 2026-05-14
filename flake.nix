@@ -18,19 +18,15 @@
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
       python = pkgs.python3.withPackages (ps: [ ps.invoke ]);
+      hostname = pkgs.lib.strings.trim (builtins.readFile /etc/hostname);
+      nixosFlake = builtins.getFlake "/etc/nixos";
+      kernel = nixosFlake.outputs.nixosConfigurations.${hostname}.config.boot.kernelPackages.kernel;
 
     in
     {
-      nixosConfigurations = nixpkgs.lib.nixosSystem {
-        system = system;
-        modules = [ /etc/nixos/configuration.nix ];
-      };
-
       packages.${system} = {
         nvme-trace = pkgs.callPackage ./nix/nvme-trace.nix { inherit crane; };
-        relay-repro = pkgs.callPackage ./nix/relay-repro.nix {
-          kernel = self.nixosConfigurations.myhost.config.boot.kernelPackages.kernel;
-        };
+        relay-repro = pkgs.callPackage ./nix/relay-repro.nix { inherit kernel; };
       };
 
       formatter.${system} = pkgs.nixfmt-rfc-style;
