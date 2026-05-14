@@ -97,17 +97,22 @@ static const struct rchan_callbacks repro_cb = {
 
 static int writer_fn(void *unused)
 {
-	u32 seq = 0;
+	u32 seq    = 0;
+	u64 toggle = 0; /* flips on every seq wraparound */
 
 	while (!kthread_should_stop()) {
 		struct repro_rec r = {
 			.magic        = cpu_to_le32(REPRO_MAGIC),
-			.seq          = cpu_to_le32(seq++),
+			.seq          = cpu_to_le32(seq),
 			.timestamp_ns = cpu_to_le64(ktime_get_ns()),
-			.fill         = 0,
+			.fill         = cpu_to_le64(toggle),
 		};
 
 		relay_write(repro_chan, &r, sizeof(r));
+
+		if (seq == U32_MAX)
+			toggle ^= 1;
+		seq++;
 		cpu_relax();
 	}
 	return 0;

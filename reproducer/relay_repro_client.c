@@ -22,7 +22,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 #define REPRO_MAGIC  UINT32_C(0xDEADBEEF)
@@ -47,11 +46,9 @@ int main(int argc, char *argv[])
 				    : "/sys/kernel/debug/relay_repro/buf0";
 	int fd;
 	uint8_t *buf;
-	/* Carry incomplete record bytes across read() calls. */
-	uint8_t carry[RECORD_SIZE];
-	int     carry_len = 0;
 	uint64_t file_off = 0;
-	uint32_t last_seq = UINT32_MAX; /* sentinel: no record seen yet */
+	uint32_t last_seq    = UINT32_MAX; /* sentinel: no record seen yet */
+	uint64_t last_toggle = UINT64_MAX; /* matches last_seq sentinel   */
 	uint64_t total = 0, dups = 0;
 
 	signal(SIGINT,  on_sigint);
@@ -87,6 +84,11 @@ int main(int argc, char *argv[])
 
 		ssize_t n = read(fd, buf, READ_BUF);
 
+		if (n > 0 && n % RECORD_SIZE != 0)
+			fprintf(stderr, "warning: read %" PRIdMAX
+				" bytes — not a multiple of %d (record_size)\n",
+				(intmax_t)n, RECORD_SIZE);
+
 		if (n == 0 || (n < 0 && errno == EAGAIN))
 			continue;
 		if (n < 0) { perror("read"); break; }
@@ -94,44 +96,12 @@ int main(int argc, char *argv[])
 		uint8_t *p   = buf;
 		uint8_t *end = buf + n;
 
-		/* ---- prepend any bytes left from the previous read ---- */
-		if (carry_len > 0) {
-			int need = RECORD_SIZE - carry_len;
-			if (end - p < need) {
-				/* Still not enough for a full record. */
-				memcpy(carry + carry_len, p, (size_t)(end - p));
-				carry_len += (int)(end - p);
-				file_off  += (uint64_t)n;
-				continue;
-			}
-			memcpy(carry + carry_len, p, (size_t)need);
-			p         += need;
-			carry_len  = 0;
-
-			struct repro_rec *r = (struct repro_rec *)carry;
-			uint32_t magic = le32toh(r->magic);
-			uint32_t seq   = le32toh(r->seq);
-
-			if (magic == REPRO_MAGIC) {
-				if (last_seq != UINT32_MAX && seq <= last_seq) {
-					printf("DUP  off=%-14" PRIu64
-					       "  seq=%-10" PRIu32
-					       "  prev=%" PRIu32 "\n",
-					       file_off - (uint64_t)need,
-					       seq, last_seq);
-					dups++;
-				}
-				last_seq = seq;
-				total++;
-			}
-		}
-
-		/* ---- process whole records in the new data ------------ */
 		while (p + RECORD_SIZE <= end) {
 			struct repro_rec *r = (struct repro_rec *)p;
-			uint32_t magic = le32toh(r->magic);
-			uint32_t seq   = le32toh(r->seq);
-			uint64_t off   = file_off + (uint64_t)(p - buf);
+			uint32_t magic  = le32toh(r->magic);
+			uint32_t seq    = le32toh(r->seq);
+			uint64_t toggle = le64toh(r->fill);
+			uint64_t off    = file_off + (uint64_t)(p - buf);
 
 			if (magic != REPRO_MAGIC) {
 				fprintf(stderr, "bad magic 0x%08" PRIx32
@@ -141,22 +111,19 @@ int main(int argc, char *argv[])
 				continue;
 			}
 
-			if (last_seq != UINT32_MAX && seq <= last_seq) {
+			if (last_seq != UINT32_MAX && seq <= last_seq &&
+			    toggle == last_toggle) {
 				printf("DUP  off=%-14" PRIu64
 				       "  seq=%-10" PRIu32
 				       "  prev=%" PRIu32 "\n",
 				       off, seq, last_seq);
 				dups++;
 			}
-			last_seq = seq;
+			last_seq    = seq;
+			last_toggle = toggle;
 			total++;
 			p += RECORD_SIZE;
 		}
-
-		/* ---- save any trailing partial record ----------------- */
-		carry_len = (int)(end - p);
-		if (carry_len > 0)
-			memcpy(carry, p, (size_t)carry_len);
 
 		file_off += (uint64_t)n;
 
