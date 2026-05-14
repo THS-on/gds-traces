@@ -19,9 +19,10 @@
       pkgs = nixpkgs.legacyPackages.${system};
       python = pkgs.python3.withPackages (ps: [ ps.invoke ]);
       hostname = pkgs.lib.strings.trim (builtins.readFile /etc/hostname);
-      nixosFlake = builtins.getFlake "/etc/nixos";
+      nixosFlake = builtins.getFlake (
+        builtins.unsafeDiscardStringContext (builtins.storePath "/run/booted-system/flake")
+      );
       kernel = nixosFlake.outputs.nixosConfigurations.${hostname}.config.boot.kernelPackages.kernel;
-
     in
     {
       packages.${system} = {
