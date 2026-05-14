@@ -49,7 +49,7 @@ int main(int argc, char *argv[])
 	uint64_t file_off = 0;
 	uint32_t last_seq    = UINT32_MAX; /* sentinel: no record seen yet */
 	uint64_t last_toggle = UINT64_MAX; /* matches last_seq sentinel   */
-	uint64_t total = 0, dups = 0;
+	uint64_t total = 0, dups = 0, last_report = 0;
 
 	signal(SIGINT,  on_sigint);
 	signal(SIGTERM, on_sigint);
@@ -127,9 +127,11 @@ int main(int argc, char *argv[])
 
 		file_off += (uint64_t)n;
 
-		if (total > 0 && total % 1000000 == 0)
+		if (total - last_report >= 1000000) {
 			printf("  %" PRIu64 " records  %" PRIu64 " dups\n",
 			       total, dups);
+			last_report = total;
+		}
 	}
 
 	printf("\nTotal: %" PRIu64 " records  %" PRIu64 " duplicates\n",
