@@ -21,9 +21,16 @@
 
     in
     {
+      nixosConfigurations = nixpkgs.lib.nixosSystem {
+        system = system;
+        modules = [ /etc/nixos/configuration.nix ];
+      };
+
       packages.${system} = {
         nvme-trace = pkgs.callPackage ./nix/nvme-trace.nix { inherit crane; };
-        relay-repro = pkgs.linuxPackages.callPackage ./nix/relay-repro.nix { };
+        relay-repro = pkgs.callPackage ./nix/relay-repro.nix {
+          kernel = self.nixosConfigurations.myhost.config.boot.kernelPackages.kernel;
+        };
       };
 
       formatter.${system} = pkgs.nixfmt-rfc-style;
