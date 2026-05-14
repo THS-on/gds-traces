@@ -6,7 +6,10 @@
  * subbuf are re-served, producing seq values far below the current cursor.
  *
  * Usage:
- *   ./relay_repro_client [/sys/kernel/debug/relay_repro/buf0]
+ *   ./relay_repro_client [-c cpu] [-n] [/sys/kernel/debug/relay_repro/buf0]
+ *
+ *   -c <cpu>   Pin to this CPU (default: 1)
+ *   -n         No-poll mode: busy-loop reads instead of poll(2)
  *
  * Pin the process to CPU 1 (where the kernel writer is on CPU 0) to
  * maximise contention with relay_switch_subbuf().
@@ -15,6 +18,7 @@
 #include <endian.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <inttypes.h>
 #include <poll.h>
 #include <sched.h>
@@ -40,10 +44,43 @@ _Static_assert(sizeof(struct repro_rec) == RECORD_SIZE, "size mismatch");
 static volatile int stop_flag;
 static void on_sigint(int s) { (void)s; stop_flag = 1; }
 
+static void usage(const char *prog)
+{
+	fprintf(stderr,
+		"Usage: %s [-c cpu] [-n] [path]\n"
+		"  -c <cpu>  Pin to CPU (default: 1)\n"
+		"  -n        No-poll mode: busy-loop reads instead of poll(2)\n",
+		prog);
+}
+
 int main(int argc, char *argv[])
 {
-	const char *path = argc > 1 ? argv[1]
-				    : "/sys/kernel/debug/relay_repro/buf0";
+	int opt_cpu  = 1;
+	int opt_poll = 1;
+
+	static const struct option longopts[] = {
+		{ "cpu",     required_argument, NULL, 'c' },
+		{ "no-poll", no_argument,       NULL, 'n' },
+		{ NULL, 0, NULL, 0 }
+	};
+
+	int opt;
+	while ((opt = getopt_long(argc, argv, "c:n", longopts, NULL)) != -1) {
+		switch (opt) {
+		case 'c':
+			opt_cpu = atoi(optarg);
+			break;
+		case 'n':
+			opt_poll = 0;
+			break;
+		default:
+			usage(argv[0]);
+			return 1;
+		}
+	}
+
+	const char *path = optind < argc ? argv[optind]
+					 : "/sys/kernel/debug/relay_repro/buf0";
 	int fd;
 	uint8_t *buf;
 	uint64_t file_off = 0;
@@ -54,12 +91,9 @@ int main(int argc, char *argv[])
 	signal(SIGINT,  on_sigint);
 	signal(SIGTERM, on_sigint);
 
-	/* Pin to CPU 1 so the writer on CPU 0 and reader share the same
-	 * cache domain — store propagation is fast and the race window is hit
-	 * regularly.                                                           */
 	cpu_set_t cpuset;
 	CPU_ZERO(&cpuset);
-	CPU_SET(1, &cpuset);
+	CPU_SET(opt_cpu, &cpuset);
 	if (sched_setaffinity(0, sizeof(cpuset), &cpuset) < 0)
 		perror("sched_setaffinity (continuing anyway)");
 
@@ -69,18 +103,21 @@ int main(int argc, char *argv[])
 	buf = malloc(READ_BUF);
 	if (!buf) { perror("malloc"); return 1; }
 
-	printf("Reading %s  (Ctrl-C to stop)\n", path);
+	printf("Reading %s  cpu=%d  mode=%s  (Ctrl-C to stop)\n",
+	       path, opt_cpu, opt_poll ? "poll" : "no-poll");
 	fflush(stdout);
 
 	while (!stop_flag) {
-		struct pollfd pfd = { .fd = fd, .events = POLLIN };
-		int ret = poll(&pfd, 1, 100);
-		if (ret < 0) {
-			if (errno == EINTR) continue;
-			perror("poll"); break;
+		if (opt_poll) {
+			struct pollfd pfd = { .fd = fd, .events = POLLIN };
+			int ret = poll(&pfd, 1, 100);
+			if (ret < 0) {
+				if (errno == EINTR) continue;
+				perror("poll"); break;
+			}
+			if (ret == 0 || !(pfd.revents & POLLIN))
+				continue;
 		}
-		if (ret == 0 || !(pfd.revents & POLLIN))
-			continue;
 
 		ssize_t n = read(fd, buf, READ_BUF);
 
