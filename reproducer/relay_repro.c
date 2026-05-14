@@ -78,7 +78,11 @@ static int repro_remove_buf_file(struct dentry *d)
 static int repro_subbuf_start(struct rchan_buf *buf, void *subbuf,
 			      void *prev_subbuf)
 {
-	return !relay_buf_full(buf);
+	if (relay_buf_full(buf)) {
+		pr_warn_ratelimited("relay_repro: buffer full, dropping record\n");
+		return 0;
+	}
+	return 1;
 }
 
 static const struct rchan_callbacks repro_cb = {
