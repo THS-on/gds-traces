@@ -7,11 +7,16 @@ from .common import PERF_DATA_DIR, PERF_SCRIPTS_DIR
 
 
 @task(auto_shortflags=False)
-def queue_depth(c, data_dir=None):
-    """Analyse a captured NVMe perf trace for queue depth distribution."""
+def queue_depth(c, data_dir=None, output=None):
+    """Generate an interactive HTML queue depth histogram."""
     data_dir = Path(data_dir) if data_dir else PERF_DATA_DIR
-    script = PERF_SCRIPTS_DIR / "perf-parse-queue-depth.py"
-    c.run(f"sudo perf script -i {data_dir}/nvme_sorted.data -s {script}")
+    script = PERF_SCRIPTS_DIR / "perf-plot-queue-depth.py"
+    out = Path(output) if output else data_dir / "queue_depth_histogram.html"
+    site_packages = sysconfig.get_path("purelib")
+    c.run(
+        f"sudo PYTHONPATH={site_packages} PERF_QUEUE_DEPTH_OUTPUT={out} "
+        f"perf script -i {data_dir}/nvme_sorted.data -s {script}"
+    )
 
 
 @task(auto_shortflags=False)
