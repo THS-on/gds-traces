@@ -1,6 +1,8 @@
 import re
 import shlex
+import signal
 import socket
+import subprocess
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
@@ -9,6 +11,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 CONFIG_TOML = PROJECT_ROOT / "config.toml"
 MOUNT_POINT = "/mnt/nvme"
 FILE_SIZE = "100G"
+PERF_DATA_DIR = PROJECT_ROOT / "perf-data"
+PERF_SCRIPTS_DIR = PROJECT_ROOT / "perf-scripts"
 
 DOCKER_BASE_FLAGS = [
     "--privileged",
@@ -102,3 +106,55 @@ def testfile_mount(c):
     finally:
         c.run(f"sudo umount {MOUNT_POINT}")
         c.run(f"sudo rm -r '{MOUNT_POINT}'")
+
+
+def _ctrl_id_from_controller(controller: str) -> int:
+    match = re.match(r"nvme(\d+)", controller)
+    if not match:
+        raise RuntimeError(f"Cannot extract ctrl_id from '{controller}'")
+    return int(match.group(1))
+
+
+@contextmanager
+def perf_capture(c, output_dir=None, ctrl_id=None, ring_buffer="1G"):
+    """Records NVMe submit/complete perf events while the body executes, then injects build-IDs."""
+    output_dir = Path(output_dir) if output_dir else PERF_DATA_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if ctrl_id is None:
+        ctrl_id = _ctrl_id_from_controller(load_nvme_controller())
+
+    raw_path = output_dir / "nvme_raw.data"
+    sorted_path = output_dir / "nvme_sorted.data"
+
+    cmd = [
+        "sudo",
+        "perf",
+        "record",
+        "-e",
+        "nvme:nvme_pci_submit",
+        "--filter",
+        f"ctrl_id=={ctrl_id}",
+        "-e",
+        "nvme:nvme_pci_complete",
+        "--filter",
+        f"ctrl_id=={ctrl_id}",
+        "-a",
+        "-T",
+        "--sample-identifier",
+        "-k",
+        "CLOCK_MONOTONIC",
+        "-m",
+        ring_buffer,
+        "-r",
+        "10",
+        "-o",
+        str(raw_path),
+    ]
+    proc = subprocess.Popen(cmd)
+    try:
+        yield output_dir
+    finally:
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=30)
+        c.run(f"sudo perf inject --build-ids -i {raw_path} -o {sorted_path}")
