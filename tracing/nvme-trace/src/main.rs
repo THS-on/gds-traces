@@ -1,5 +1,6 @@
 mod analyze;
 mod capture;
+mod ftrace;
 mod print;
 mod splice;
 
@@ -10,7 +11,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(about = "Capture, splice, and print NVMe PCI relay traces")]
+#[command(about = "Capture, splice, and print NVMe PCI ftrace captures")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -19,14 +20,22 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Capture {
+        /// Filter events to a single controller (sets `ctrl_id==N` ftrace filter).
+        /// Omit to capture all controllers.
         #[arg(long)]
-        controller: String,
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long)]
-        trace_dir: Option<PathBuf>,
+        ctrl_id: Option<u32>,
+        /// Total ftrace ring-buffer size in MiB, split across CPUs.
+        #[arg(long, default_value_t = 512)]
+        buffer_mb: u64,
+        /// Milliseconds to drain remaining pages after Ctrl-C.
         #[arg(long, default_value_t = 250)]
         drain_ms: u64,
+        /// Override the ftrace directory (default: /sys/kernel/debug/tracing).
+        #[arg(long)]
+        tracing_dir: Option<PathBuf>,
+        /// Directory to write per-CPU output files (cpu0.bin, cpu1.bin, …).
+        #[arg(long)]
+        out: PathBuf,
     },
     Splice {
         #[arg(long)]
@@ -69,11 +78,12 @@ enum AnalyzeCommand {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Capture {
-            controller,
-            out,
-            trace_dir,
+            ctrl_id,
+            buffer_mb,
             drain_ms,
-        } => capture::capture(&controller, trace_dir, &out, drain_ms),
+            tracing_dir,
+            out,
+        } => capture::capture(ctrl_id, buffer_mb, drain_ms, tracing_dir, &out),
         Command::Splice { out, inputs } => splice::splice(&inputs, &out),
         Command::Print { block_size, inputs } => print::print_records(&inputs, block_size),
         Command::Analyze { command } => match command {

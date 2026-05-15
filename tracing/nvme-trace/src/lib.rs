@@ -386,12 +386,14 @@ pub fn parse_record_bytes(bytes: Vec<u8>, offset: u64) -> Result<RawRecord> {
 }
 
 pub fn record_order(a: &Header, b: &Header) -> Ordering {
-    // seq is the authoritative order within a device: the kernel captures the
-    // timestamp before claiming the atomic seq counter, so cross-CPU races can
-    // produce a slightly-earlier timestamp paired with a higher seq number.
-    // Use seq as the primary key for same-controller records; fall back to
-    // timestamp only when comparing across different controllers.
-    if a.ctrl_id == b.ctrl_id {
+    // Relay captures: seq is a reliable per-device monotonic counter; use it
+    // as the primary key for same-controller records (the kernel increments seq
+    // atomically so it is correct even when timestamps have small cross-CPU
+    // skew).
+    //
+    // ftrace captures: seq is always 0 (no per-device counter in ftrace).
+    // Fall through to timestamp ordering, which is accurate for ftrace events.
+    if a.ctrl_id == b.ctrl_id && a.seq != 0 && b.seq != 0 {
         a.seq
             .cmp(&b.seq)
             .then_with(|| a.qid.cmp(&b.qid))
@@ -400,7 +402,6 @@ pub fn record_order(a: &Header, b: &Header) -> Ordering {
         a.timestamp_ns
             .cmp(&b.timestamp_ns)
             .then_with(|| a.ctrl_id.cmp(&b.ctrl_id))
-            .then_with(|| a.seq.cmp(&b.seq))
             .then_with(|| a.qid.cmp(&b.qid))
             .then_with(|| a.cid.cmp(&b.cid))
     }
@@ -446,16 +447,16 @@ fn splice_streams_with_names<R: Read, W: Write, F: FnMut(String)>(
     }
 
     let mut written = 0_u64;
-    let mut last_seq_by_ctrl = HashMap::<u8, u32>::new();
+    let mut last_ts_by_ctrl = HashMap::<u8, u64>::new();
 
     while let Some(item) = heap.pop() {
         let header = item.record.header;
-        if let Some(last_seq) = last_seq_by_ctrl.insert(header.ctrl_id, header.seq)
-            && header.seq <= last_seq
+        if let Some(last_ts) = last_ts_by_ctrl.insert(header.ctrl_id, header.timestamp_ns)
+            && header.timestamp_ns < last_ts
         {
             warn(format!(
-                "sequence is not increasing for ctrl {}: previous={} current={} source={} offset={}",
-                header.ctrl_id, last_seq, header.seq, item.source_name, item.record.offset
+                "timestamp went backwards for ctrl {}: previous={}ns current={}ns source={} offset={}",
+                header.ctrl_id, last_ts, header.timestamp_ns, item.source_name, item.record.offset
             ));
         }
 
