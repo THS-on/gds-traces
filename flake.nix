@@ -15,7 +15,10 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
-      python = pkgs.python3.withPackages (ps: [ ps.invoke ]);
+      python = pkgs.python3.withPackages (ps: [
+        ps.invoke
+        ps.plotly
+      ]);
       hostname = pkgs.lib.strings.trim (builtins.readFile /etc/hostname);
       nixosFlake = builtins.getFlake (
         builtins.unsafeDiscardStringContext (builtins.storePath "/run/booted-system/flake")
