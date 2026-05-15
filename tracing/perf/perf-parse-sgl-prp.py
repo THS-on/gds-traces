@@ -10,71 +10,23 @@
 from __future__ import print_function
 
 import os
-import struct
 import sys
 
 sys.path.append(
     os.environ["PERF_EXEC_PATH"] + "/scripts/python/Perf-Trace-Util/lib/Perf/Trace"
 )
 
+# Allow importing nvme_trace_events from the same directory as this script.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from perf_trace_context import *  # noqa: F403
 from Core import *  # noqa: F403
-
-
-_OPCODES = {
-    0x00: "flush",
-    0x01: "write",
-    0x02: "read",
-    0x04: "write_uncorrectable",
-    0x05: "compare",
-    0x08: "write_zeroes",
-    0x09: "dataset_management",
-    0x0C: "verify",
-}
-
-
-def _opcode_name(op):
-    return _OPCODES.get(op, f"unknown(0x{op:02x})")
-
-
-def _parse_descriptors(descriptors, use_sgl):
-    data = bytes(descriptors)
-    if use_sgl:
-        entries = []
-        for i in range(0, len(data) - 15, 16):
-            addr, length, r0, r1, r2, dtype = struct.unpack_from("<QIBBBB", data, i)
-            entries.append(
-                f"{{addr=0x{addr:016x},len={length},"
-                f"type=0x{dtype:02x},reserved={r0:02x}{r1:02x}{r2:02x}}}"
-            )
-        return "[" + ",".join(entries) + "]"
-    else:
-        entries = []
-        for i in range(0, len(data) - 7, 8):
-            (addr,) = struct.unpack_from("<Q", data, i)
-            entries.append(f"0x{addr:016x}")
-        return "[" + ",".join(entries) + "]"
-
-
-def _decode_sqe(sqe):
-    data = bytes(sqe)
-    op = data[0]
-    info = {"opcode": f"{_opcode_name(op)}(0x{op:02x})"}
-    if op in (0x01, 0x02):
-        nsid = struct.unpack_from("<I", data, 4)[0]
-        prp1 = struct.unpack_from("<Q", data, 24)[0]
-        prp2 = struct.unpack_from("<Q", data, 32)[0]
-        slba = struct.unpack_from("<Q", data, 40)[0]
-        nlb = struct.unpack_from("<H", data, 48)[0] + 1
-        info.update(
-            nsid=nsid,
-            slba=slba,
-            nlb=nlb,
-            prp1=f"0x{prp1:016x}",
-            prp2=f"0x{prp2:016x}",
-        )
-    return info
+from nvme_trace_events import (
+    NvmePciComplete,
+    NvmePciSubmit,
+    parse_complete,
+    parse_submit,
+)
 
 
 def trace_begin():
@@ -108,11 +60,13 @@ def nvme__nvme_pci_complete(
         event_name, common_cpu, common_secs, common_nsecs, common_pid, common_comm
     )
 
+    ev: NvmePciComplete = parse_complete(
+        ctrl_id, qid, cid, result, sq_head, sq_id, status, retries
+    )
     print(
-        "ctrl_id=%d, qid=%d, cid=%u, "
-        "result=%u, sq_head=%u, sq_id=%u, "
-        "status=%u, retries=%u"
-        % (ctrl_id, qid, cid, result, sq_head, sq_id, status, retries)
+        f"ctrl_id={ev.ctrl_id} qid={ev.qid} cid={ev.cid} "
+        f"result=0x{ev.result:016x} sq_head={ev.sq_head} sq_id={ev.sq_id} "
+        f"status=0x{ev.status:04x} retries={ev.retries}"
     )
 
     print("Sample: {" + get_dict_as_string(perf_sample_dict["sample"], ", ") + "}")
@@ -161,16 +115,50 @@ def nvme__nvme_pci_submit(
         event_name, common_cpu, common_secs, common_nsecs, common_pid, common_comm
     )
 
-    sqe_info = _decode_sqe(sqe)
-    desc_str = _parse_descriptors(descriptors, use_sgl)
-    sqe_parts = " ".join(f"{k}={v}" for k, v in sqe_info.items())
+    ev: NvmePciSubmit = parse_submit(
+        ctrl_id,
+        qid,
+        cid,
+        opcode,
+        nsid,
+        data_len,
+        meta_len,
+        use_sgl,
+        single_segment,
+        sqe,
+        descriptors,
+    )
+
+    sqe_parts = f"opcode={ev.sqe.opcode_str}"
+    if ev.sqe.nsid is not None:
+        sqe_parts += (
+            f" nsid={ev.sqe.nsid} slba={ev.sqe.slba} nlb={ev.sqe.nlb}"
+            f" prp1=0x{ev.sqe.prp1:016x} prp2=0x{ev.sqe.prp2:016x}"
+        )
+
+    if ev.use_sgl:
+        desc_str = (
+            "["
+            + ",".join(
+                f"{{addr=0x{d.addr:016x},len={d.length},"
+                f"type=0x{d.desc_type:02x},"
+                f"reserved={d.reserved[0]:02x}{d.reserved[1]:02x}{d.reserved[2]:02x}}}"
+                for d in ev.sgl_entries
+            )
+            + "]"
+        )
+    else:
+        desc_str = "[" + ",".join(f"0x{a:016x}" for a in ev.prp_entries) + "]"
+
     print(
-        f"ctrl_id={ctrl_id} qid={qid} cid={cid} "
-        f"opcode=0x{opcode:02x} nsid={nsid} data_len={data_len} "
-        f"meta_len={meta_len} use_sgl={use_sgl} single_segment={single_segment}"
+        f"ctrl_id={ev.ctrl_id} qid={ev.qid} cid={ev.cid} "
+        f"opcode=0x{ev.opcode:02x} nsid={ev.nsid} data_len={ev.data_len} "
+        f"meta_len={ev.meta_len} use_sgl={ev.use_sgl} "
+        f"single_segment={ev.single_segment}"
     )
     print(f"  sqe: {sqe_parts}")
-    print(f"  descriptors({len(bytes(descriptors))}B): {desc_str}")
+    desc_count = len(ev.sgl_entries) if ev.use_sgl else len(ev.prp_entries)
+    print(f"  descriptors({desc_count}): {desc_str}")
 
     print("Sample: {" + get_dict_as_string(perf_sample_dict["sample"], ", ") + "}")
 
