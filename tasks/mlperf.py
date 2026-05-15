@@ -3,7 +3,7 @@ from pathlib import Path
 
 from invoke import Collection, task
 
-from .common import nvme_mount
+from .common import nvme_mount, perf_capture
 
 IMAGE = "mlperf-storage"
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -120,47 +120,48 @@ def training_smoke(
     host_list = hosts.split(",")
     params = _training_params(model, num_files, read_threads, prefetch_size, odirect)
     with nvme_mount(c) as mount:
-        common = [
-            "--hosts",
-            *host_list,
-            "--model",
-            model,
-            "--data-dir",
-            CONTAINER_DATA_DIR,
-            "--results-dir",
-            CONTAINER_RESULTS_DIR,
-            "--allow-run-as-root",
-            "--params",
-            *params,
-        ]
-        _run_mlperf(
-            c,
-            [
-                "training",
-                "datagen",
-                *common,
-                "--num-processes",
-                num_processes,
-            ],
-            mount,
-        )
-        _run_mlperf(
-            c,
-            [
-                "training",
-                "run",
-                *common,
-                "--client-host-memory-in-gb",
-                client_memory_gb,
-                "--num-accelerators",
-                num_accelerators,
-                "--num-client-hosts",
-                len(host_list),
-                "--accelerator-type",
-                accelerator,
-            ],
-            mount,
-        )
+        with perf_capture(c):
+            common = [
+                "--hosts",
+                *host_list,
+                "--model",
+                model,
+                "--data-dir",
+                CONTAINER_DATA_DIR,
+                "--results-dir",
+                CONTAINER_RESULTS_DIR,
+                "--allow-run-as-root",
+                "--params",
+                *params,
+            ]
+            _run_mlperf(
+                c,
+                [
+                    "training",
+                    "datagen",
+                    *common,
+                    "--num-processes",
+                    num_processes,
+                ],
+                mount,
+            )
+            _run_mlperf(
+                c,
+                [
+                    "training",
+                    "run",
+                    *common,
+                    "--client-host-memory-in-gb",
+                    client_memory_gb,
+                    "--num-accelerators",
+                    num_accelerators,
+                    "--num-client-hosts",
+                    len(host_list),
+                    "--accelerator-type",
+                    accelerator,
+                ],
+                mount,
+            )
     _run_mlperf(c, ["reports", "reportgen", "--results-dir", CONTAINER_RESULTS_DIR])
 
 
@@ -182,31 +183,32 @@ def checkpoint_smoke(
     """Format the configured NVMe and run a one-write/one-read checkpointing smoke workflow."""
     host_list = hosts.split(",")
     with nvme_mount(c) as mount:
-        _run_mlperf(
-            c,
-            [
-                "checkpointing",
-                "run",
-                "--hosts",
-                *host_list,
-                "--model",
-                model,
-                "--client-host-memory-in-gb",
-                client_memory_gb,
-                "--num-processes",
-                num_processes,
-                "--checkpoint-folder",
-                f"{CONTAINER_DATA_DIR}/checkpoints",
-                "--results-dir",
-                CONTAINER_RESULTS_DIR,
-                "--num-checkpoints-read",
-                1,
-                "--num-checkpoints-write",
-                1,
-                "--allow-run-as-root",
-            ],
-            mount,
-        )
+        with perf_capture(c):
+            _run_mlperf(
+                c,
+                [
+                    "checkpointing",
+                    "run",
+                    "--hosts",
+                    *host_list,
+                    "--model",
+                    model,
+                    "--client-host-memory-in-gb",
+                    client_memory_gb,
+                    "--num-processes",
+                    num_processes,
+                    "--checkpoint-folder",
+                    f"{CONTAINER_DATA_DIR}/checkpoints",
+                    "--results-dir",
+                    CONTAINER_RESULTS_DIR,
+                    "--num-checkpoints-read",
+                    1,
+                    "--num-checkpoints-write",
+                    1,
+                    "--allow-run-as-root",
+                ],
+                mount,
+            )
 
 
 ns = Collection("mlperf")
