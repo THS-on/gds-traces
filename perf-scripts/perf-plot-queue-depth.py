@@ -13,7 +13,6 @@ import os
 import sys
 
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 sys.path.append(
     os.environ["PERF_EXEC_PATH"] + "/scripts/python/Perf-Trace-Util/lib/Perf/Trace"
@@ -189,42 +188,22 @@ def _aggregate_buckets() -> dict:
     return agg
 
 
-def _write_plotly_html(path: str) -> None:
-    queue_keys = sorted(_buckets)
-    n_queues = len(queue_keys)
+def _make_bar_figure(counts: dict, title: str) -> go.Figure:
+    depths = sorted(counts)
+    values = [counts[d] for d in depths]
+    total = sum(values)
+    avg = _weighted_avg(counts)
+    p50 = _weighted_percentile(counts, 50)
+    p99 = _weighted_percentile(counts, 99)
 
-    # Row 1: aggregated; Row 2..N+1: one per (ctrl, qid)
-    subplot_titles = ["Aggregated (all queues)"] + [
-        f"ctrl={ctrl_id} q={qid}" for ctrl_id, qid in queue_keys
-    ]
-    fig = make_subplots(
-        rows=1 + n_queues,
-        cols=1,
-        shared_xaxes=True,
-        subplot_titles=subplot_titles,
-        vertical_spacing=0.05,
-    )
-
-    # --- Aggregated trace ---
-    agg = _aggregate_buckets()
-    depths = sorted(agg)
-    counts = [agg[d] for d in depths]
-    total = sum(counts)
-    avg = _weighted_avg(agg)
-    p50 = _weighted_percentile(agg, 50)
-    p99 = _weighted_percentile(agg, 99)
-
+    fig = go.Figure()
     fig.add_trace(
         go.Bar(
             x=depths,
-            y=counts,
-            name="All queues",
-            marker_color="steelblue",
+            y=values,
             opacity=0.8,
-            hovertemplate="Depth: %{x}<br>Count: %{y}<extra>All queues</extra>",
-        ),
-        row=1,
-        col=1,
+            hovertemplate="Depth: %{x}<br>Count: %{y}<extra></extra>",
+        )
     )
     fig.add_vline(
         x=p50,
@@ -232,8 +211,6 @@ def _write_plotly_html(path: str) -> None:
         line_color="green",
         annotation_text=f"p50={p50:.0f}",
         annotation_position="top right",
-        row=1,
-        col=1,
     )
     fig.add_vline(
         x=p99,
@@ -241,65 +218,43 @@ def _write_plotly_html(path: str) -> None:
         line_color="red",
         annotation_text=f"p99={p99:.0f}",
         annotation_position="top right",
-        row=1,
-        col=1,
     )
-
-    # --- Per-queue traces ---
-    for row_idx, queue_key in enumerate(queue_keys, start=2):
-        ctrl_id, qid = queue_key
-        per_q = _buckets[queue_key]
-        q_depths = sorted(per_q)
-        q_counts = [per_q[d] for d in q_depths]
-        q_p50 = _weighted_percentile(per_q, 50)
-        q_p99 = _weighted_percentile(per_q, 99)
-        label = f"ctrl={ctrl_id} q={qid}"
-
-        fig.add_trace(
-            go.Bar(
-                x=q_depths,
-                y=q_counts,
-                name=label,
-                opacity=0.8,
-                hovertemplate=f"Depth: %{{x}}<br>Count: %{{y}}<extra>{label}</extra>",
-            ),
-            row=row_idx,
-            col=1,
-        )
-        fig.add_vline(
-            x=q_p50,
-            line_dash="dash",
-            line_color="green",
-            annotation_text=f"p50={q_p50:.0f}",
-            annotation_position="top right",
-            row=row_idx,
-            col=1,
-        )
-        fig.add_vline(
-            x=q_p99,
-            line_dash="dash",
-            line_color="red",
-            annotation_text=f"p99={q_p99:.0f}",
-            annotation_position="top right",
-            row=row_idx,
-            col=1,
-        )
-
-    total_height = 400 + 300 * n_queues
     fig.update_layout(
         title=dict(
             text=(
-                f"NVMe Queue Depth at Submit Time<br>"
+                f"{title}<br>"
                 f"<sup>n={total:,}  avg={avg:.1f}  p50={p50:.0f}  p99={p99:.0f}</sup>"
             ),
             x=0.5,
         ),
+        xaxis_title="Queue Depth",
         yaxis_title="Count",
         bargap=0.05,
         showlegend=False,
-        height=total_height,
         hovermode="x unified",
+        height=150,
     )
-    fig.update_xaxes(title_text="Queue Depth", row=1 + n_queues, col=1)
+    return fig
 
-    fig.write_html(path, include_plotlyjs="cdn")
+
+def _write_plotly_html(path: str) -> None:
+    figures: list = []
+
+    agg = _aggregate_buckets()
+    figures.append(_make_bar_figure(agg, "NVMe Queue Depth — Aggregated (all queues)"))
+
+    for ctrl_id, qid in sorted(_buckets):
+        figures.append(
+            _make_bar_figure(
+                _buckets[(ctrl_id, qid)],
+                f"NVMe Queue Depth — ctrl={ctrl_id} q={qid}",
+            )
+        )
+
+    chunks = [figures[0].to_html(full_html=False, include_plotlyjs="cdn")]
+    chunks += [f.to_html(full_html=False, include_plotlyjs=False) for f in figures[1:]]
+
+    with open(path, "w") as fh:
+        fh.write("<html><body>\n")
+        fh.write("\n".join(chunks))
+        fh.write("\n</body></html>\n")
