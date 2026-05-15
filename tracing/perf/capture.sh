@@ -7,8 +7,8 @@ sudo perf record \
     -T \
     --sample-identifier \
     -k CLOCK_MONOTONIC \
-    -o nvme_raw.data \ 
-    fio --name=nvme_write --filename=/dev/disk/by-id/nvme-KIOXIA_KCMYXRUG3T84_4FB0A0CT0LM3_1 --rw=write --bs=128k --iodepth=4 --ioengine=libaio --direct=1 --size=200G --numjobs=1
+    -o nvme_raw.data \
+    sudo fio --name=nvme_write --filename=/dev/disk/by-id/nvme-KIOXIA_KCMYXRUG3T84_4FB0A0CT0LM3_1 --rw=write --bs=128k --iodepth=4 --ioengine=libaio --direct=1 --size=10G --numjobs=1
 
 sudo perf inject --build-ids -i nvme_raw.data -o nvme_sorted.data
 

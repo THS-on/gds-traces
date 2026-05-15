@@ -10,6 +10,7 @@
 from __future__ import print_function
 
 import os
+import struct
 import sys
 
 sys.path.append(
@@ -19,6 +20,61 @@ sys.path.append(
 
 from perf_trace_context import *  # noqa: F403
 from Core import *  # noqa: F403
+
+
+_OPCODES = {
+    0x00: "flush",
+    0x01: "write",
+    0x02: "read",
+    0x04: "write_uncorrectable",
+    0x05: "compare",
+    0x08: "write_zeroes",
+    0x09: "dataset_management",
+    0x0C: "verify",
+}
+
+
+def _opcode_name(op):
+    return _OPCODES.get(op, f"unknown(0x{op:02x})")
+
+
+def _parse_descriptors(descriptors, use_sgl):
+    data = bytes(descriptors)
+    if use_sgl:
+        entries = []
+        for i in range(0, len(data) - 15, 16):
+            addr, length, r0, r1, r2, dtype = struct.unpack_from("<QIBBBB", data, i)
+            entries.append(
+                f"{{addr=0x{addr:016x},len={length},"
+                f"type=0x{dtype:02x},reserved={r0:02x}{r1:02x}{r2:02x}}}"
+            )
+        return "[" + ",".join(entries) + "]"
+    else:
+        entries = []
+        for i in range(0, len(data) - 7, 8):
+            (addr,) = struct.unpack_from("<Q", data, i)
+            entries.append(f"0x{addr:016x}")
+        return "[" + ",".join(entries) + "]"
+
+
+def _decode_sqe(sqe):
+    data = bytes(sqe)
+    op = data[0]
+    info = {"opcode": f"{_opcode_name(op)}(0x{op:02x})"}
+    if op in (0x01, 0x02):
+        nsid = struct.unpack_from("<I", data, 4)[0]
+        prp1 = struct.unpack_from("<Q", data, 24)[0]
+        prp2 = struct.unpack_from("<Q", data, 32)[0]
+        slba = struct.unpack_from("<Q", data, 40)[0]
+        nlb = struct.unpack_from("<H", data, 48)[0] + 1
+        info.update(
+            nsid=nsid,
+            slba=slba,
+            nlb=nlb,
+            prp1=f"0x{prp1:016x}",
+            prp2=f"0x{prp2:016x}",
+        )
+    return info
 
 
 def trace_begin():
@@ -105,25 +161,16 @@ def nvme__nvme_pci_submit(
         event_name, common_cpu, common_secs, common_nsecs, common_pid, common_comm
     )
 
+    sqe_info = _decode_sqe(sqe)
+    desc_str = _parse_descriptors(descriptors, use_sgl)
+    sqe_parts = " ".join(f"{k}={v}" for k, v in sqe_info.items())
     print(
-        "ctrl_id=%d, qid=%d, cid=%u, "
-        "opcode=%u, nsid=%u, data_len=%u, "
-        "meta_len=%u, use_sgl=%u, single_segment=%u, "
-        "sqe=%s, descriptors=%s"
-        % (
-            ctrl_id,
-            qid,
-            cid,
-            opcode,
-            nsid,
-            data_len,
-            meta_len,
-            use_sgl,
-            single_segment,
-            sqe,
-            descriptors,
-        )
+        f"ctrl_id={ctrl_id} qid={qid} cid={cid} "
+        f"opcode=0x{opcode:02x} nsid={nsid} data_len={data_len} "
+        f"meta_len={meta_len} use_sgl={use_sgl} single_segment={single_segment}"
     )
+    print(f"  sqe: {sqe_parts}")
+    print(f"  descriptors({len(bytes(descriptors))}B): {desc_str}")
 
     print("Sample: {" + get_dict_as_string(perf_sample_dict["sample"], ", ") + "}")
 
