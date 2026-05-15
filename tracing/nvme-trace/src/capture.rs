@@ -1,6 +1,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsFd;
+
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -112,25 +115,33 @@ fn capture_trace_file(
     let mut bytes = 0_u64;
 
     loop {
-        match input.read(&mut buf) {
-            Ok(0) => {
-                if stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(5));
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+
+        let mut pfds = [PollFd::new(input.as_fd(), PollFlags::POLLIN)];
+        match poll(&mut pfds, PollTimeout::try_from(100u16).unwrap()) {
+            Ok(0) => continue,
+            Ok(_) if !pfds[0].revents().is_some_and(|r| r.contains(PollFlags::POLLIN)) => {
+                continue;
             }
+            Ok(_) => {}
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(e) => {
+                return Err(anyhow::Error::from(e))
+                    .with_context(|| format!("polling relay file {}", trace_path.display()));
+            }
+        }
+
+        match input.read(&mut buf) {
+            Ok(0) => {}
             Ok(n) => {
                 output
                     .write_all(&buf[..n])
                     .with_context(|| format!("writing {}", out_path.display()))?;
                 bytes += n as u64;
             }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                if stop.load(Ordering::SeqCst) {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(5));
-            }
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => {
                 return Err(err)
