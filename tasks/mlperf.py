@@ -8,6 +8,7 @@ from .common import nvme_mount, perf_capture
 IMAGE = "mlperf-storage"
 PROJECT_ROOT = Path(__file__).parent.parent
 HOST_RESULTS_DIR = PROJECT_ROOT / "results" / "mlperf"
+PERF_DIR = PROJECT_ROOT / "results" / "mlperf-perf"
 CONTAINER_DATA_DIR = "/mnt/nvme/mlperf_data"
 CONTAINER_RESULTS_DIR = "/results"
 
@@ -120,7 +121,7 @@ def training_smoke(
     host_list = hosts.split(",")
     params = _training_params(model, num_files, read_threads, prefetch_size, odirect)
     with nvme_mount(c) as mount:
-        with perf_capture(c):
+        with perf_capture(c, output_dir=PERF_DIR):
             common = [
                 "--hosts",
                 *host_list,
@@ -183,7 +184,7 @@ def checkpoint_smoke(
     """Format the configured NVMe and run a one-write/one-read checkpointing smoke workflow."""
     host_list = hosts.split(",")
     with nvme_mount(c) as mount:
-        with perf_capture(c):
+        with perf_capture(c, output_dir=PERF_DIR):
             _run_mlperf(
                 c,
                 [
