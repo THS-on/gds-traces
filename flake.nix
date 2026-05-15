@@ -35,7 +35,7 @@
       checks.${system}.pre-commit-check = pre-commit-hooks.lib.${system}.run {
         src = ./.;
         hooks = {
-          nixfmt-rfc-style.enable = true;
+          nixfmt.enable = true;
           ruff.enable = true;
           ruff-format.enable = true;
         };
@@ -46,6 +46,8 @@
           python
           pkgs.e2fsprogs
           pkgs.util-linux
+          pkgs.fio
+          pkgs.trace-cmd
         ];
         shellHook = ''
           ${self.checks.${system}.pre-commit-check.shellHook}
